@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  any-dl-webapp:
+    build: .
+    container_name: any-dl-webapp
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+    volumes:
+      - ./downloads:/app/downloads
+      - ./data:/app/data
