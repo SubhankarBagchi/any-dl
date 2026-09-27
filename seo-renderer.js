@@ -1,5 +1,6 @@
 // SEO Page HTML Template Generator for Any DL
 const seoPages = require('./seo-pages');
+const { getHeaderNavHtml, getFooterHtml } = require('./legal-pages-renderer');
 
 function renderSeoPage(page, hostUrl = '') {
   const currentUrl = `${hostUrl}/${page.slug}`;
@@ -199,6 +200,8 @@ function renderSeoPage(page, hostUrl = '') {
             <a href="/" style="color:var(--text-muted); text-decoration:none;">Home</a> / <span style="color:${page.color};">${page.name}</span>
           </div>
         </div>
+
+        ${getHeaderNavHtml()}
 
         <div class="header-actions">
           <div class="quick-status-chip">
@@ -552,23 +555,8 @@ function renderSeoPage(page, hostUrl = '') {
         </div>
       </section>
 
-      <!-- Footer SEO Directory -->
-      <footer style="margin-top: 80px; padding-top: 36px; border-top: 1px solid var(--border-glass);">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 16px;">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <img src="/assets/logo.png" alt="Any DL Logo" style="width: 32px; height: 32px;">
-            <span style="font-size: 1.2rem; font-weight: 800;">Any <span style="color:var(--accent-cyan);">DL</span></span>
-          </div>
-          <p style="font-size: 0.8rem; color: var(--text-dim);">© 2026 Any DL • The Universal Media Downloader</p>
-        </div>
-
-        <div style="margin-top: 20px;">
-          <h4 style="font-size: 0.82rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 1px; margin-bottom: 14px;">Supported Platform Downloaders</h4>
-          <ul style="list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; padding: 0;">
-            ${footerLinksHtml}
-          </ul>
-        </div>
-      </footer>
+      <!-- Google AdSense Compliant Footer -->
+      ${getFooterHtml()}
 
     </main>
 
@@ -641,7 +629,12 @@ function renderSitemap(hostUrl = '') {
       loc: `${hostUrl}/${p.slug}`,
       priority: '0.9',
       changefreq: 'weekly'
-    }))
+    })),
+    { loc: `${hostUrl}/privacy-policy`, priority: '0.7', changefreq: 'monthly' },
+    { loc: `${hostUrl}/terms-of-service`, priority: '0.7', changefreq: 'monthly' },
+    { loc: `${hostUrl}/disclaimer`, priority: '0.7', changefreq: 'monthly' },
+    { loc: `${hostUrl}/dmca`, priority: '0.7', changefreq: 'monthly' },
+    { loc: `${hostUrl}/contact`, priority: '0.7', changefreq: 'monthly' }
   ];
 
   const xmlEntries = urls.map(u => `  <url>

@@ -400,20 +400,46 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// 2. Extract Info / Inspect URL
+// In-memory cache for fast URL analysis (avoids slow redundant yt-dlp calls)
+const infoCache = new Map();
+const INFO_CACHE_TTL = 15 * 60 * 1000; // 15 mins
+
+// 2. Extract Info / Inspect URL (High-Speed Optimized)
 app.get('/api/info', (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
 
+  // Check cache first for instant response
+  const cached = infoCache.get(targetUrl);
+  if (cached && (Date.now() - cached.timestamp < INFO_CACHE_TTL)) {
+    return res.json(cached.data);
+  }
+
   const settings = getSettings();
+  const isPlaylistReq = req.query.playlist === 'true';
+
+  // High-speed extraction flags:
+  // 1. --no-playlist: Prevents 30s+ hang when user pastes a link with &list=
+  // 2. --extractor-args: Queries android client for instant response without heavy JS execution
+  // 3. --socket-timeout: Never hangs on slow network calls
   const args = [
     '--dump-single-json',
     '--no-warnings',
     '--skip-download',
-    '--ffmpeg-location', FFMPEG_BIN
+    '--no-check-certificates',
+    '--socket-timeout', '10',
+    '--extractor-args', 'youtube:player_client=android,web'
   ];
+
+  if (!isPlaylistReq) {
+    args.push('--no-playlist');
+  }
+
+  if (FFMPEG_BIN) {
+    args.push('--ffmpeg-location', FFMPEG_BIN);
+  }
 
   const cookiePath = getCookieFilePath();
   if (cookiePath) args.push('--cookies', cookiePath);
@@ -431,7 +457,7 @@ app.get('/api/info', (req, res) => {
   proc.on('close', code => {
     if (code !== 0 || !stdoutData) {
       return res.status(500).json({
-        error: stderrData.trim() || 'Failed to extract media information'
+        error: stderrData.trim() || 'Failed to extract media information. Check if URL is valid or private.'
       });
     }
 
@@ -468,7 +494,8 @@ app.get('/api/info', (req, res) => {
                 acodec: f.acodec,
                 size: size,
                 label: label,
-                hasAudio: f.acodec && f.acodec !== 'none'
+                hasAudio: f.acodec && f.acodec !== 'none',
+                direct_url: f.url || null
               });
             }
           }
@@ -483,7 +510,8 @@ app.get('/api/info', (req, res) => {
             ext: f.ext,
             acodec: f.acodec,
             abr: abr,
-            size: size
+            size: size,
+            direct_url: f.url || null
           });
         }
       });
@@ -520,7 +548,7 @@ app.get('/api/info', (req, res) => {
         }));
       }
 
-      res.json({
+      const responsePayload = {
         success: true,
         id: data.id,
         title: data.title,
@@ -540,9 +568,18 @@ app.get('/api/info', (req, res) => {
         audioFormats,
         subtitles,
         chapters
-      });
+      };
+
+      // Save to cache (limit size to 250 items)
+      infoCache.set(targetUrl, { timestamp: Date.now(), data: responsePayload });
+      if (infoCache.size > 250) {
+        const oldest = infoCache.keys().next().value;
+        infoCache.delete(oldest);
+      }
+
+      res.json(responsePayload);
     } catch (err) {
-      res.status(500).json({ error: 'Failed to parse metadata from yt-dlp: ' + err.message });
+      res.status(500).json({ error: 'Failed to parse metadata from engine: ' + err.message });
     }
   });
 });
@@ -1049,6 +1086,7 @@ app.post('/api/update-ytdlp', (req, res) => {
 const seoPages = require('./seo-pages');
 const { renderSeoPage, renderSitemap } = require('./seo-renderer');
 const { renderSupportedSitesPage } = require('./supported-sites-renderer');
+const legalPages = require('./legal-pages-renderer');
 
 // 18. XML Sitemap for Google Search Console
 app.get('/sitemap.xml', (req, res) => {
@@ -1076,6 +1114,32 @@ seoPages.forEach(page => {
     const hostUrl = `${req.protocol}://${req.get('host')}`;
     res.send(renderSeoPage(page, hostUrl));
   });
+});
+
+// 22. Google AdSense Compliant Legal Pages
+app.get('/privacy-policy', (req, res) => {
+  const hostUrl = `${req.protocol}://${req.get('host')}`;
+  res.send(legalPages.renderPrivacyPolicy(hostUrl));
+});
+
+app.get('/terms-of-service', (req, res) => {
+  const hostUrl = `${req.protocol}://${req.get('host')}`;
+  res.send(legalPages.renderTermsOfService(hostUrl));
+});
+
+app.get('/disclaimer', (req, res) => {
+  const hostUrl = `${req.protocol}://${req.get('host')}`;
+  res.send(legalPages.renderDisclaimer(hostUrl));
+});
+
+app.get('/dmca', (req, res) => {
+  const hostUrl = `${req.protocol}://${req.get('host')}`;
+  res.send(legalPages.renderDmca(hostUrl));
+});
+
+app.get('/contact', (req, res) => {
+  const hostUrl = `${req.protocol}://${req.get('host')}`;
+  res.send(legalPages.renderContact(hostUrl));
 });
 
 // Start Server

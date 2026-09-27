@@ -1,5 +1,6 @@
 // Supported Sites Page Generator for Google SEO & User Discovery
 const seoPages = require('./seo-pages');
+const { getHeaderNavHtml, getFooterHtml } = require('./legal-pages-renderer');
 const fs = require('fs');
 const path = require('path');
 
@@ -127,6 +128,7 @@ function renderSupportedSitesPage(hostUrl = '') {
             <a href="/" style="color:var(--text-muted); text-decoration:none;">Home</a> / <span style="color:var(--accent-cyan);">Supported Sites</span>
           </div>
         </div>
+        ${getHeaderNavHtml()}
         <div class="header-actions">
           <div class="quick-status-chip">
             <svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
@@ -208,9 +210,7 @@ function renderSupportedSitesPage(hostUrl = '') {
         </div>
       </section>
 
-      <footer style="margin-top: 80px; padding-top: 36px; border-top: 1px solid var(--border-glass); text-align:center;">
-        <p style="font-size: 0.85rem; color: var(--text-dim);">© 2026 Any DL • The Universal Media Downloader</p>
-      </footer>
+      ${getFooterHtml()}
     </main>
   </div>
 

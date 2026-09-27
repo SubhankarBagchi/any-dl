@@ -342,6 +342,35 @@ body {
   letter-spacing: -0.5px;
 }
 
+.header-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-nav-link {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  transition: all var(--transition-fast);
+  border: 1px solid transparent;
+}
+
+.header-nav-link:hover {
+  color: var(--accent-cyan);
+  background: rgba(0, 229, 255, 0.08);
+  border-color: rgba(0, 229, 255, 0.2);
+}
+
+@media (max-width: 992px) {
+  .header-nav-links {
+    display: none;
+  }
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -2519,4 +2548,198 @@ body[data-theme="clean-light"] .moon-icon { display: none; }
   transition: transform 0.2s ease;
   display: inline-block;
 }
+
+/* ========================================================
+   GOOGLE ADSENSE COMPATIBLE HEADER & FOOTER
+   ======================================================== */
+.header-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-nav-link {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.header-nav-link:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 900px) {
+  .header-nav-links {
+    display: none;
+  }
+}
+
+/* Premium App Footer */
+.app-footer {
+  margin-top: 60px;
+  padding: 48px 0 24px;
+  border-top: 1px solid var(--border-glass);
+  position: relative;
+  z-index: 10;
+}
+
+.footer-grid {
+  display: grid;
+  grid-template-columns: 2fr 1.3fr 1.3fr 1.8fr;
+  gap: 36px;
+  margin-bottom: 40px;
+}
+
+@media (max-width: 1024px) {
+  .footer-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+  }
+}
+
+@media (max-width: 640px) {
+  .footer-grid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+}
+
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.footer-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+}
+
+.footer-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.footer-title span {
+  color: var(--accent-cyan);
+}
+
+.footer-tagline {
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.footer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.f-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-glass);
+  color: var(--text-muted);
+}
+
+.footer-heading {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 16px;
+  letter-spacing: 0.3px;
+  position: relative;
+  padding-bottom: 6px;
+}
+
+.footer-heading::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 24px;
+  height: 2px;
+  background: var(--accent-cyan);
+  border-radius: var(--radius-pill);
+}
+
+.footer-links {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.footer-links a {
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.footer-links a:hover {
+  color: var(--accent-cyan);
+  transform: translateX(3px);
+}
+
+.footer-notice-text {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.adsense-disclosure-text {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+}
+
+.adsense-disclosure-text a {
+  color: var(--accent-cyan);
+  text-decoration: underline;
+}
+
+.footer-bottom-bar {
+  padding-top: 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.footer-bottom-links a {
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.footer-bottom-links a:hover {
+  color: var(--accent-cyan);
+}
+
 
