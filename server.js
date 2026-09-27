@@ -1142,13 +1142,18 @@ app.get('/contact', (req, res) => {
   res.send(legalPages.renderContact(hostUrl));
 });
 
-// Start Server
-app.listen(PORT, () => {
-  console.log(`===============================================`);
-  console.log(` Any DL Web Server started successfully! `);
-  console.log(` Local URL: http://localhost:${PORT}`);
-  console.log(` yt-dlp binary: ${YTDLP_BIN}`);
-  console.log(` FFmpeg binary: ${FFMPEG_BIN}`);
-  console.log(` Downloads directory: ${DOWNLOADS_DIR}`);
-  console.log(`===============================================`);
-});
+// Start Server (Only listen if run directly, export for Vercel/serverless)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`===============================================`);
+    console.log(` Any DL Web Server started successfully! `);
+    console.log(` Local URL: http://localhost:${PORT}`);
+    console.log(` yt-dlp binary: ${YTDLP_BIN}`);
+    console.log(` FFmpeg binary: ${FFMPEG_BIN}`);
+    console.log(` Downloads directory: ${DOWNLOADS_DIR}`);
+    console.log(`===============================================`);
+  });
+}
+
+module.exports = app;
+
