@@ -657,7 +657,15 @@ async function fetchMediaInfo(url) {
 
   try {
     const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
-    const data = await res.json();
+    const contentType = res.headers.get('content-type') || '';
+    let data;
+
+    if (contentType.includes('application/json')) {
+      data = await res.json();
+    } else {
+      const text = await res.text();
+      throw new Error(`Server returned error (${res.status}). Serverless function may be starting or timed out. Please retry.`);
+    }
 
     if (!res.ok || data.error) {
       throw new Error(data.error || 'Failed to extract media information');
@@ -680,7 +688,14 @@ async function performSearch(query) {
 
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-    const data = await res.json();
+    const contentType = res.headers.get('content-type') || '';
+    let data;
+
+    if (contentType.includes('application/json')) {
+      data = await res.json();
+    } else {
+      throw new Error(`Search unavailable (${res.status}). Please paste a direct video/music URL.`);
+    }
 
     if (!res.ok || !data.results) {
       throw new Error('Search failed. Try with a direct URL.');
@@ -885,7 +900,15 @@ async function queueDownload(options = {}) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    const contentType = res.headers.get('content-type') || '';
+    let data;
+
+    if (contentType.includes('application/json')) {
+      data = await res.json();
+    } else {
+      throw new Error(`Download service returned ${res.status}. Note: Vercel serverless has a 60s limit. For large 1080p/4K downloads, deploy via Docker on Render.`);
+    }
+
     if (!res.ok) throw new Error(data.error || 'Failed to start download');
 
     if (!isBackgroundQueue) {
