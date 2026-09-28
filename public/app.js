@@ -472,6 +472,20 @@ function initDownloader() {
     checkPlatform(val);
   });
 
+  // Instant Auto-Analysis on Paste (Ctrl+V, Right-Click Paste, Mobile Tap)
+  elements.urlInput.addEventListener('paste', () => {
+    setTimeout(() => {
+      const val = elements.urlInput.value.trim();
+      if (val) {
+        elements.clearBtn.style.display = 'flex';
+        checkPlatform(val);
+        if (isUrl(val)) {
+          analyzeOrSearch(val);
+        }
+      }
+    }, 40);
+  });
+
   elements.clearBtn.addEventListener('click', () => {
     elements.urlInput.value = '';
     elements.clearBtn.style.display = 'none';
@@ -666,8 +680,12 @@ async function fetchMediaInfo(url) {
   setLoading(true);
   elements.searchResultsSection.style.display = 'none';
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s maximum timeout
+
   try {
-    const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
+    const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
     const contentType = res.headers.get('content-type') || '';
     let data;
 
@@ -686,8 +704,13 @@ async function fetchMediaInfo(url) {
     renderMediaInspector(data);
     showToast(`Media loaded: ${data.title}`, 'success');
   } catch (err) {
-    showToast(err.message, 'error');
+    if (err.name === 'AbortError') {
+      showToast('Analysis request timed out. Please try pasting again.', 'error');
+    } else {
+      showToast(err.message, 'error');
+    }
   } finally {
+    clearTimeout(timeoutId);
     setLoading(false);
   }
 }
