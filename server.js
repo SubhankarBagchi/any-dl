@@ -15,22 +15,46 @@ const STORAGE_BASE = IS_VERCEL ? '/tmp' : BASE_DIR;
 const BIN_DIR = path.join(BASE_DIR, 'bin');
 
 // Resolve yt-dlp binary cross-platform
+let cachedYtDlpPath = null;
+
+// Resolve yt-dlp binary cross-platform
 function resolveYtDlpBin() {
+  if (cachedYtDlpPath && fs.existsSync(cachedYtDlpPath)) {
+    return cachedYtDlpPath;
+  }
   if (process.env.YTDLP_PATH && fs.existsSync(process.env.YTDLP_PATH)) {
-    return process.env.YTDLP_PATH;
+    cachedYtDlpPath = process.env.YTDLP_PATH;
+    return cachedYtDlpPath;
   }
   const winBin = path.join(BIN_DIR, 'yt-dlp.exe');
   if (process.platform === 'win32' && fs.existsSync(winBin)) {
+    cachedYtDlpPath = winBin;
     return winBin;
   }
   const linuxBin = path.join(BIN_DIR, 'yt-dlp');
   if (fs.existsSync(linuxBin)) {
+    cachedYtDlpPath = linuxBin;
     return linuxBin;
   }
+  const tmpBin = path.join('/tmp', 'yt-dlp');
+  if (fs.existsSync(tmpBin)) {
+    try { fs.chmodSync(tmpBin, 0o755); } catch (e) {}
+    cachedYtDlpPath = tmpBin;
+    return tmpBin;
+  }
+  try {
+    const { execSync } = require('child_process');
+    const cmd = process.platform === 'win32' ? 'where yt-dlp.exe' : 'which yt-dlp';
+    const found = execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().split(/[\r\n]+/)[0];
+    if (found && fs.existsSync(found)) {
+      cachedYtDlpPath = found;
+      return found;
+    }
+  } catch (e) {}
   return 'yt-dlp';
 }
 
-const YTDLP_BIN = resolveYtDlpBin();
+let YTDLP_BIN = resolveYtDlpBin();
 const FFMPEG_BIN = ffmpegStatic || 'ffmpeg';
 const DOWNLOADS_DIR = path.join(STORAGE_BASE, 'downloads');
 const DATA_DIR = path.join(STORAGE_BASE, 'data');
@@ -49,14 +73,79 @@ const ANALYTICS_FILE = path.join(DATA_DIR, 'analytics.json');
 
 // Check if yt-dlp binary is actually callable on the host
 function hasYtDlpBinary() {
-  if (IS_VERCEL) return false;
+  const bin = resolveYtDlpBin();
+  if (bin && (bin.includes(path.sep) || bin.startsWith('/'))) {
+    if (fs.existsSync(bin)) return true;
+  }
   try {
-    if (YTDLP_BIN && fs.existsSync(YTDLP_BIN)) {
-      return true;
-    }
+    const { execSync } = require('child_process');
+    execSync(`"${bin}" --version`, { stdio: 'ignore' });
+    return true;
   } catch (e) {}
   return false;
 }
+
+let isEnsuringBinary = false;
+async function ensureYtDlpBinary() {
+  if (hasYtDlpBinary()) {
+    YTDLP_BIN = resolveYtDlpBin();
+    return YTDLP_BIN;
+  }
+
+  // On Linux / Serverless (e.g. Vercel, AWS Lambda, Docker) auto-download standalone binary into /tmp if missing
+  if (process.platform === 'linux') {
+    const tmpBin = path.join('/tmp', 'yt-dlp');
+    if (fs.existsSync(tmpBin)) {
+      try {
+        fs.chmodSync(tmpBin, 0o755);
+        cachedYtDlpPath = tmpBin;
+        YTDLP_BIN = tmpBin;
+        return tmpBin;
+      } catch (e) {}
+    }
+
+    if (isEnsuringBinary) {
+      let attempts = 0;
+      while (isEnsuringBinary && attempts < 40) {
+        await new Promise(r => setTimeout(r, 500));
+        attempts++;
+      }
+      if (fs.existsSync(tmpBin)) {
+        cachedYtDlpPath = tmpBin;
+        YTDLP_BIN = tmpBin;
+        return tmpBin;
+      }
+    }
+
+    isEnsuringBinary = true;
+    console.log('[Engine] Auto-provisioning Linux yt-dlp binary into /tmp/yt-dlp...');
+    try {
+      const res = await fetch('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(45000)
+      });
+      if (res.ok) {
+        const buffer = Buffer.from(await res.arrayBuffer());
+        fs.writeFileSync(tmpBin, buffer);
+        fs.chmodSync(tmpBin, 0o755);
+        cachedYtDlpPath = tmpBin;
+        YTDLP_BIN = tmpBin;
+        console.log('[Engine] Standalone Linux yt-dlp binary provisioned successfully to /tmp/yt-dlp');
+        return tmpBin;
+      }
+    } catch (err) {
+      console.warn('[Engine] Failed to auto-provision yt-dlp into /tmp:', err.message);
+    } finally {
+      isEnsuringBinary = false;
+    }
+  }
+
+  YTDLP_BIN = resolveYtDlpBin();
+  return YTDLP_BIN;
+}
+
+// Pre-warm binary in background on module load
+ensureYtDlpBinary().catch(() => {});
 
 // Analytics Helpers
 const DEFAULT_ANALYTICS = {
@@ -894,7 +983,9 @@ async function fallbackExtractInfo(targetUrl) {
 }
 
 // 1. Status & Engine Check
-app.get('/api/status', (req, res) => {
+app.get('/api/status', async (req, res) => {
+  await ensureYtDlpBinary();
+
   if (!hasYtDlpBinary()) {
     let downloadsCount = 0;
     try { downloadsCount = fs.readdirSync(DOWNLOADS_DIR).length; } catch (e) {}
@@ -921,7 +1012,7 @@ app.get('/api/status', (req, res) => {
     res.json({
       success: true,
       engine: 'yt-dlp',
-      isVercel: false,
+      isVercel: IS_VERCEL,
       ytdlpVersion,
       ffmpegAvailable: !!FFMPEG_BIN,
       ffmpegPath: FFMPEG_BIN,
@@ -952,7 +1043,10 @@ app.get('/api/info', async (req, res) => {
     return res.json(cached.data);
   }
 
-  // If running on Vercel or yt-dlp binary is not installed locally, use ultra-fast serverless extractor (< 250ms)
+  // Ensure binary is ready if available
+  await ensureYtDlpBinary();
+
+  // If running on serverless without local binary, use ultra-fast serverless extractor (< 250ms)
   if (!hasYtDlpBinary()) {
     try {
       const fallbackData = await fallbackExtractInfo(targetUrl);
@@ -1244,7 +1338,8 @@ app.get('/api/browser-download', async (req, res) => {
     }
   }
 
-  // 2. Local yt-dlp Engine Stream (If binary exists locally)
+  // 2. Local yt-dlp Engine Stream (If binary exists locally or in /tmp)
+  await ensureYtDlpBinary();
   if (hasYtDlpBinary()) {
     console.log(`[Browser Download] Starting high-fidelity stream for: ${safeFilename}`);
 
@@ -1363,7 +1458,7 @@ app.get('/api/browser-download', async (req, res) => {
     return;
   }
 
-  // 3. Fallback for Vercel Serverless
+  // 3. Fallback when engine binary is not running
   try {
     const meta = await fallbackExtractInfo(url);
     let resolvedStreamUrl = null;
@@ -1375,19 +1470,37 @@ app.get('/api/browser-download', async (req, res) => {
       resolvedStreamUrl = match ? match.direct_url : null;
     }
 
-    if (resolvedStreamUrl) {
-      return res.redirect(resolvedStreamUrl);
+    if (resolvedStreamUrl && resolvedStreamUrl.startsWith('http')) {
+      console.log(`[Browser Download] Piping fallback resolved URL to browser: ${safeFilename}`);
+      const fetchHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': '*/*'
+      };
+      const streamRes = await fetch(resolvedStreamUrl, { headers: fetchHeaders });
+      if (streamRes.ok) {
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
+        const contentType = streamRes.headers.get('content-type') || (type === 'audio' ? 'audio/mpeg' : 'video/mp4');
+        res.setHeader('Content-Type', contentType);
+        const contentLength = streamRes.headers.get('content-length');
+        if (contentLength) {
+          res.setHeader('Content-Length', contentLength);
+          trackDownloadEvent(url, type, parseInt(contentLength, 10), true);
+        }
+
+        const nodeStream = streamRes.body;
+        if (nodeStream.pipe) {
+          return nodeStream.pipe(res);
+        } else {
+          const { Readable } = require('stream');
+          return Readable.fromWeb(nodeStream).pipe(res);
+        }
+      }
     }
 
-    // For YouTube on Vercel: redirect to fast stream converter button
-    const isYouTube = /(?:youtube\.com|youtu\.be)/i.test(url);
-    if (isYouTube) {
-      const formatParam = type === 'audio' ? (audioFormat || 'mp3') : (resolution || '1080');
-      return res.redirect(`https://loader.to/api/button/?url=${encodeURIComponent(url)}&f=${formatParam}`);
-    }
-
-    res.redirect(url);
+    trackDownloadEvent(url, type, 0, false);
+    return res.status(422).send('Media stream could not be extracted directly for this video. Please deploy using Docker or a VPS to use the full native yt-dlp core.');
   } catch (err) {
+    trackDownloadEvent(url, type, 0, false);
     res.status(500).send('Download error: ' + err.message);
   }
 });
