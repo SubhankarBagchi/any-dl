@@ -472,7 +472,7 @@ function initDownloader() {
     checkPlatform(val);
   });
 
-  // Instant Auto-Analysis on Paste (Ctrl+V, Right-Click Paste, Mobile Tap)
+  // Auto-analyze on direct paste (Ctrl+V / Right-click Paste)
   elements.urlInput.addEventListener('paste', () => {
     setTimeout(() => {
       const val = elements.urlInput.value.trim();
@@ -680,12 +680,8 @@ async function fetchMediaInfo(url) {
   setLoading(true);
   elements.searchResultsSection.style.display = 'none';
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s maximum timeout
-
   try {
-    const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`, { signal: controller.signal });
-    clearTimeout(timeoutId);
+    const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
     const contentType = res.headers.get('content-type') || '';
     let data;
 
@@ -704,13 +700,8 @@ async function fetchMediaInfo(url) {
     renderMediaInspector(data);
     showToast(`Media loaded: ${data.title}`, 'success');
   } catch (err) {
-    if (err.name === 'AbortError') {
-      showToast('Analysis request timed out. Please try pasting again.', 'error');
-    } else {
-      showToast(err.message, 'error');
-    }
+    showToast(err.message, 'error');
   } finally {
-    clearTimeout(timeoutId);
     setLoading(false);
   }
 }
@@ -884,10 +875,9 @@ function handleStartDownload(isBackgroundQueue = false) {
       return;
     }
 
-    if (isBackgroundQueue) {
+    if (isBackgroundQueue && !state.isVercel) {
       batchQueueDownload(checkedItems, mode);
     } else {
-      // Direct browser download for the first checked item, queue the rest
       showToast(`Starting browser download for: ${checkedItems[0].title}`, 'success');
       downloadDirectToBrowser({
         url: checkedItems[0].url,
@@ -899,7 +889,7 @@ function handleStartDownload(isBackgroundQueue = false) {
       }
     }
   } else {
-    if (!isBackgroundQueue) {
+    if (!isBackgroundQueue || state.isVercel) {
       // 100% DIRECT BROWSER DOWNLOAD: Instant & Serverless / Vercel compatible
       downloadDirectToBrowser({ type: mode });
     } else {
@@ -946,7 +936,7 @@ function downloadDirectToBrowser(customOptions = {}) {
 
   const downloadUrl = `/api/browser-download?${queryParams.toString()}`;
 
-  showToast(`🚀 Starting browser download: ${customOptions.title || media.title}`, 'success');
+  showToast(`Starting browser download: ${customOptions.title || media.title}`, 'success');
 
   // Inline progress feedback
   if (elements.cardInlineProgress) {
@@ -1438,12 +1428,13 @@ async function fetchStatus() {
     const res = await fetch('/api/status');
     const data = await res.json();
     if (data.success) {
+      state.isVercel = !!data.isVercel;
       if (elements.diagYtdlpVer) elements.diagYtdlpVer.textContent = data.ytdlpVersion;
-      if (elements.diagFfmpegPath) elements.diagFfmpegPath.textContent = data.ffmpegPath ? 'Installed (GPL Native)' : 'Not detected';
+      if (elements.diagFfmpegPath) elements.diagFfmpegPath.textContent = data.ffmpegPath ? 'Installed (GPL Native)' : (data.isVercel ? 'Cloud Streamer' : 'Not detected');
       const chip = document.getElementById('quick-engine-chip');
-      if (chip) chip.innerHTML = `<svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span>Ultra-Fast Core</span>`;
+      if (chip) chip.innerHTML = `<svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span>${data.isVercel ? 'Serverless Core' : 'Ultra-Fast Core'}</span>`;
       const engineDetails = document.getElementById('engine-details');
-      if (engineDetails) engineDetails.textContent = 'Universal Core';
+      if (engineDetails) engineDetails.textContent = data.engine || 'Universal Core';
     }
   } catch (err) {}
 }
