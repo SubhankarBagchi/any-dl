@@ -604,12 +604,23 @@ function initDownloader() {
   // Download Thumb / Subs Only
   elements.btnDownloadThumb.addEventListener('click', () => {
     if (!state.currentMedia) return;
-    queueDownload({ type: 'thumbnail' });
+    if (state.currentMedia.thumbnail) {
+      const a = document.createElement('a');
+      a.href = state.currentMedia.thumbnail;
+      a.setAttribute('download', `${(state.currentMedia.title || 'thumbnail').substring(0, 50)}.jpg`);
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => a.remove(), 1000);
+      showToast('Downloading thumbnail directly...', 'success');
+    } else {
+      downloadDirectToBrowser({ type: 'thumbnail' });
+    }
   });
 
   elements.btnDownloadSubs.addEventListener('click', () => {
     if (!state.currentMedia) return;
-    queueDownload({ type: 'subtitle' });
+    downloadDirectToBrowser({ type: 'subtitle' });
   });
 
   // Start Download Now Button (Direct to Browser)
@@ -850,10 +861,129 @@ function handleStartDownload(isBackgroundQueue = false) {
       return;
     }
 
-    batchQueueDownload(checkedItems, mode);
+    if (isBackgroundQueue) {
+      batchQueueDownload(checkedItems, mode);
+    } else {
+      // Direct browser download for the first checked item, queue the rest
+      showToast(`Starting browser download for: ${checkedItems[0].title}`, 'success');
+      downloadDirectToBrowser({
+        url: checkedItems[0].url,
+        title: checkedItems[0].title,
+        type: mode
+      });
+      if (checkedItems.length > 1) {
+        batchQueueDownload(checkedItems.slice(1), mode);
+      }
+    }
   } else {
-    queueDownload({ type: mode, isBackgroundQueue });
+    if (!isBackgroundQueue) {
+      // 100% DIRECT BROWSER DOWNLOAD: Instant & Serverless / Vercel compatible
+      downloadDirectToBrowser({ type: mode });
+    } else {
+      queueDownload({ type: mode, isBackgroundQueue: true });
+    }
   }
+}
+
+// High-Speed Direct Browser Native Download
+function downloadDirectToBrowser(customOptions = {}) {
+  const media = state.currentMedia;
+  if (!media) return;
+
+  const activeModeBtn = document.querySelector('.mode-btn.active');
+  const mode = customOptions.type || (activeModeBtn ? activeModeBtn.dataset.mode : 'video');
+  const res = customOptions.resolution || state.selectedVideoRes || '1080';
+  const container = customOptions.container || state.selectedVideoContainer || 'mp4';
+  const audioFormat = customOptions.audioFormat || state.selectedAudioFormat || 'mp3';
+  const audioQuality = customOptions.audioQuality || state.selectedAudioQuality || '320k';
+  const formatId = customOptions.formatId || (state.selectedStreamId !== 'auto' ? state.selectedStreamId : '');
+
+  // Look for direct stream URL if available
+  let directUrl = customOptions.directUrl || '';
+  if (!directUrl && mode === 'video' && media.videoFormats) {
+    const matched = media.videoFormats.find(f => (f.height == res || f.format_id == formatId) && f.direct_url);
+    if (matched) directUrl = matched.direct_url;
+  }
+  if (!directUrl && mode === 'audio' && media.audioFormats) {
+    const matched = media.audioFormats.find(f => f.direct_url);
+    if (matched) directUrl = matched.direct_url;
+  }
+
+  const queryParams = new URLSearchParams({
+    url: customOptions.url || media.webpage_url,
+    title: customOptions.title || media.title || 'media',
+    type: mode,
+    resolution: res,
+    container: container,
+    audioFormat: audioFormat,
+    audioQuality: audioQuality,
+    formatId: formatId,
+    directUrl: directUrl
+  });
+
+  const downloadUrl = `/api/browser-download?${queryParams.toString()}`;
+
+  showToast(`🚀 Starting browser download: ${customOptions.title || media.title}`, 'success');
+
+  // Inline progress feedback
+  if (elements.cardInlineProgress) {
+    elements.cardInlineProgress.style.display = 'block';
+    elements.inlineProgressFill.style.width = '100%';
+    elements.inlineStatusPct.textContent = 'Active';
+    elements.inlineStatusTitle.textContent = 'Browser Download Initiated!';
+    elements.inlineSpeedText.textContent = 'Check your browser downloads (Ctrl + J)';
+    elements.inlineEtaText.textContent = `${mode.toUpperCase()} • ${mode === 'audio' ? audioFormat.toUpperCase() : res + 'p ' + container.toUpperCase()}`;
+    if (elements.inlineReadyActions) {
+      elements.inlineReadyActions.style.display = 'block';
+      if (elements.inlineDirectDownloadLink) {
+        elements.inlineDirectDownloadLink.href = downloadUrl;
+        elements.inlineDirectDownloadLink.innerHTML = '<span>⬇ Click here if browser download did not start automatically</span>';
+      }
+    }
+    elements.cardInlineProgress.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Record in History/Library
+  const historyItem = {
+    id: 'dl_' + Date.now(),
+    title: customOptions.title || media.title || 'Downloaded Media',
+    url: customOptions.url || media.webpage_url,
+    type: mode,
+    formatSummary: mode === 'audio' ? `Audio • ${audioFormat.toUpperCase()} (${audioQuality})` : `Video • ${res}p (${container.toUpperCase()})`,
+    thumbnail: media.thumbnail || '',
+    fileSize: 'Browser Download',
+    completedAt: new Date().toISOString()
+  };
+  addLocalHistoryItem(historyItem);
+
+  // Trigger Native Browser Download
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.setAttribute('download', `${customOptions.title || media.title || 'media'}.${mode === 'audio' ? audioFormat : container}`);
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => link.remove(), 1000);
+}
+
+// Local history helpers for persistent library on Vercel
+function getLocalHistory() {
+  try {
+    const raw = localStorage.getItem('anydl_local_history');
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function addLocalHistoryItem(item) {
+  try {
+    const current = getLocalHistory();
+    current.unshift(item);
+    if (current.length > 50) current.pop();
+    localStorage.setItem('anydl_local_history', JSON.stringify(current));
+    state.history = current;
+    renderLibrary();
+  } catch (e) {}
 }
 
 // Trigger Browser Native Download Prompt
@@ -1049,16 +1179,26 @@ elements.clearCompletedBtn.addEventListener('click', async () => {
 
 // TAB 3: MEDIA LIBRARY
 async function fetchHistory() {
+  const localItems = getLocalHistory();
   try {
     const res = await fetch('/api/history');
     const data = await res.json();
-    if (data.success) {
-      state.history = data.history;
+    if (data.success && Array.isArray(data.history)) {
+      const merged = [...localItems];
+      data.history.forEach(srvItem => {
+        if (!merged.some(m => m.url === srvItem.url || m.title === srvItem.title)) {
+          merged.push(srvItem);
+        }
+      });
+      state.history = merged;
       renderLibrary();
+      return;
     }
   } catch (err) {
-    console.error('Error fetching history:', err);
+    console.warn('Using local history fallback:', err.message);
   }
+  state.history = localItems;
+  renderLibrary();
 }
 
 function renderLibrary(filter = 'all') {

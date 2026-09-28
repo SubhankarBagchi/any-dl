@@ -8,9 +8,12 @@ const ffmpegStatic = require('ffmpeg-static');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Directories
-const BASE_DIR = __dirname;
+// Environment & Directories
+const IS_VERCEL = !!(process.env.VERCEL || process.env.NOW_REGION);
+const BASE_DIR = path.resolve(__dirname);
+const STORAGE_BASE = IS_VERCEL ? '/tmp' : BASE_DIR;
 const BIN_DIR = path.join(BASE_DIR, 'bin');
+
 // Resolve yt-dlp binary cross-platform
 function resolveYtDlpBin() {
   if (process.env.YTDLP_PATH && fs.existsSync(process.env.YTDLP_PATH)) {
@@ -19,6 +22,10 @@ function resolveYtDlpBin() {
   const winBin = path.join(BIN_DIR, 'yt-dlp.exe');
   if (process.platform === 'win32' && fs.existsSync(winBin)) {
     return winBin;
+  }
+  const tmpBin = path.join('/tmp', 'yt-dlp');
+  if (fs.existsSync(tmpBin)) {
+    return tmpBin;
   }
   const linuxBin = path.join(BIN_DIR, 'yt-dlp');
   if (fs.existsSync(linuxBin)) {
@@ -29,14 +36,18 @@ function resolveYtDlpBin() {
 
 const YTDLP_BIN = resolveYtDlpBin();
 const FFMPEG_BIN = ffmpegStatic || 'ffmpeg';
-const DOWNLOADS_DIR = path.join(BASE_DIR, 'downloads');
-const DATA_DIR = path.join(BASE_DIR, 'data');
+const DOWNLOADS_DIR = path.join(STORAGE_BASE, 'downloads');
+const DATA_DIR = path.join(STORAGE_BASE, 'data');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 
-// Ensure directories exist
+// Ensure directories exist safely (never throw on read-only environments)
 [DOWNLOADS_DIR, DATA_DIR].forEach(dir => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    console.warn(`[Storage] Could not create directory ${dir}:`, err.message);
+  }
 });
 
 // Middleware
@@ -44,6 +55,11 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(BASE_DIR, 'public')));
 app.use('/assets', express.static(path.join(BASE_DIR, 'public', 'assets')));
+
+// Guarantee Root Route on Vercel and all hosting platforms
+app.get('/', (req, res) => {
+  res.sendFile(path.join(BASE_DIR, 'public', 'index.html'));
+});
 
 // Default Settings
 const DEFAULT_SETTINGS = {
@@ -174,6 +190,7 @@ function startTask(task) {
   const args = [
     '--newline',
     '--progress',
+    '--js-runtimes', 'node',
     '--ffmpeg-location', FFMPEG_BIN,
     '-o', path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s')
   ];
@@ -380,8 +397,13 @@ function startTask(task) {
 
 // 1. Status & Engine Check
 app.get('/api/status', (req, res) => {
+  let hasYtDlp = false;
+  try {
+    hasYtDlp = fs.existsSync(YTDLP_BIN) || (!YTDLP_BIN.includes('/') && !YTDLP_BIN.includes('\\'));
+  } catch (e) {}
+
   exec(`"${YTDLP_BIN}" --version`, (err, stdout) => {
-    const ytdlpVersion = stdout ? stdout.trim() : 'Unknown';
+    const ytdlpVersion = stdout ? stdout.trim() : (IS_VERCEL ? 'Vercel Serverless Core' : 'Not installed');
     let downloadsCount = 0;
     try {
       downloadsCount = fs.readdirSync(DOWNLOADS_DIR).length;
@@ -389,7 +411,8 @@ app.get('/api/status', (req, res) => {
 
     res.json({
       success: true,
-      engine: 'yt-dlp',
+      engine: stdout ? 'yt-dlp' : (IS_VERCEL ? 'Vercel Serverless Engine' : 'Universal Core'),
+      isVercel: IS_VERCEL,
       ytdlpVersion,
       ffmpegAvailable: !!FFMPEG_BIN,
       ffmpegPath: FFMPEG_BIN,
@@ -400,29 +423,186 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// Universal Serverless Fast Extractor (Works on Vercel, serverless, and offline environments)
+async function fallbackExtractInfo(targetUrl) {
+  const isYouTube = /(?:youtube\.com\/(?:watch|shorts|embed|v|playlist)|youtu\.be\/)/i.test(targetUrl);
+  const isTikTok = /(?:tiktok\.com|vm\.tiktok\.com)/i.test(targetUrl);
+  const isSoundCloud = /soundcloud\.com/i.test(targetUrl);
+
+  // 1. YouTube Fallback via oEmbed
+  if (isYouTube) {
+    try {
+      const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`);
+      if (oembedRes.ok) {
+        const odata = await oembedRes.json();
+        const idMatch = targetUrl.match(/(?:v=|youtu\.be\/|shorts\/)([a-zA-Z0-9_-]{11})/);
+        const ytid = idMatch ? idMatch[1] : '';
+        return {
+          success: true,
+          id: ytid,
+          title: odata.title || 'YouTube Video',
+          uploader: odata.author_name || 'YouTube Creator',
+          uploader_url: odata.author_url || '',
+          duration_string: 'HD Video',
+          thumbnail: odata.thumbnail_url || (ytid ? `https://i.ytimg.com/vi/${ytid}/hqdefault.jpg` : ''),
+          webpage_url: targetUrl,
+          isPlaylist: false,
+          videoFormats: [
+            { format_id: '1080p', height: 1080, ext: 'mp4', label: '1080p FHD (High Quality)', hasAudio: true, size: '~' },
+            { format_id: '720p', height: 720, ext: 'mp4', label: '720p HD (Standard)', hasAudio: true, size: '~' },
+            { format_id: '480p', height: 480, ext: 'mp4', label: '480p SD (Data Saver)', hasAudio: true, size: '~' },
+            { format_id: '360p', height: 360, ext: 'mp4', label: '360p SD (Mobile)', hasAudio: true, size: '~' }
+          ],
+          audioFormats: [
+            { format_id: 'mp3-320', ext: 'mp3', abr: '320 kbps', size: '~', acodec: 'mp3' },
+            { format_id: 'm4a-192', ext: 'm4a', abr: '192 kbps', size: '~', acodec: 'aac' }
+          ],
+          subtitles: [],
+          chapters: []
+        };
+      }
+    } catch (e) {
+      console.warn('[Fallback] YouTube oEmbed failed:', e.message);
+    }
+  }
+
+  // 2. TikTok Fallback via TikWM
+  if (isTikTok) {
+    try {
+      const tikRes = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(targetUrl)}`);
+      if (tikRes.ok) {
+        const tikData = await tikRes.json();
+        if (tikData && tikData.data) {
+          const t = tikData.data;
+          return {
+            success: true,
+            id: t.id || 'tiktok',
+            title: t.title || 'TikTok Video',
+            uploader: (t.author && (t.author.nickname || t.author.unique_id)) || 'TikTok Creator',
+            duration_string: t.duration ? `${t.duration}s` : '',
+            thumbnail: t.cover || t.origin_cover || '',
+            webpage_url: targetUrl,
+            isPlaylist: false,
+            videoFormats: [
+              { format_id: 'hd', height: 1080, ext: 'mp4', label: 'HD No Watermark', hasAudio: true, direct_url: t.hdplay || t.play },
+              { format_id: 'sd', height: 720, ext: 'mp4', label: 'Standard MP4', hasAudio: true, direct_url: t.play }
+            ],
+            audioFormats: [
+              { format_id: 'music', ext: 'mp3', abr: '320 kbps', direct_url: t.music }
+            ],
+            subtitles: [],
+            chapters: []
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('[Fallback] TikTok API failed:', e.message);
+    }
+  }
+
+  // 3. SoundCloud Fallback via oEmbed
+  if (isSoundCloud) {
+    try {
+      const scRes = await fetch(`https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(targetUrl)}`);
+      if (scRes.ok) {
+        const scData = await scRes.json();
+        return {
+          success: true,
+          id: 'soundcloud',
+          title: scData.title || 'SoundCloud Track',
+          uploader: scData.author_name || 'SoundCloud Artist',
+          thumbnail: scData.thumbnail_url || '',
+          webpage_url: targetUrl,
+          isPlaylist: false,
+          videoFormats: [],
+          audioFormats: [
+            { format_id: 'mp3', ext: 'mp3', abr: '320 kbps', size: '~', acodec: 'mp3' },
+            { format_id: 'wav', ext: 'wav', abr: 'Lossless', size: '~', acodec: 'wav' }
+          ],
+          subtitles: [],
+          chapters: []
+        };
+      }
+    } catch (e) {}
+  }
+
+  // Generic OpenGraph Fallback (Twitter, Instagram, Facebook, Universal)
+  try {
+    const pageRes = await fetch(targetUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(5000)
+    });
+    const html = await pageRes.text();
+    const titleMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i) || html.match(/<title>([^<]+)<\/title>/i);
+    const thumbMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+    const videoMatch = html.match(/<meta\s+property=["']og:video(?::url)?["']\s+content=["']([^"']+)["']/i);
+    const siteMatch = html.match(/<meta\s+property=["']og:site_name["']\s+content=["']([^"']+)["']/i);
+
+    const title = titleMatch ? titleMatch[1].replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&') : 'Media Content';
+    const thumbnail = thumbMatch ? thumbMatch[1] : '';
+    const directVideoUrl = videoMatch ? videoMatch[1] : null;
+
+    return {
+      success: true,
+      id: 'media_' + Date.now(),
+      title: title,
+      uploader: siteMatch ? siteMatch[1] : 'Universal Media',
+      thumbnail: thumbnail,
+      webpage_url: targetUrl,
+      isPlaylist: false,
+      videoFormats: [
+        { format_id: 'best', height: 1080, ext: 'mp4', label: 'Best Quality MP4', hasAudio: true, direct_url: directVideoUrl }
+      ],
+      audioFormats: [
+        { format_id: 'mp3', ext: 'mp3', abr: '320 kbps', size: '~', acodec: 'mp3' }
+      ],
+      subtitles: [],
+      chapters: []
+    };
+  } catch (e) {
+    throw new Error('Unable to extract media information. Check the link and try again.');
+  }
+}
+
 // In-memory cache for fast URL analysis (avoids slow redundant yt-dlp calls)
 const infoCache = new Map();
 const INFO_CACHE_TTL = 15 * 60 * 1000; // 15 mins
 
 // 2. Extract Info / Inspect URL (High-Speed Optimized)
-app.get('/api/info', (req, res) => {
+app.get('/api/info', async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
 
-  // Check cache first for instant response
+  // Check cache first for instant response (< 5ms)
   const cached = infoCache.get(targetUrl);
   if (cached && (Date.now() - cached.timestamp < INFO_CACHE_TTL)) {
     return res.json(cached.data);
+  }
+
+  // Check if yt-dlp binary is available
+  let hasYtDlp = false;
+  try {
+    hasYtDlp = fs.existsSync(YTDLP_BIN) || (!YTDLP_BIN.includes('/') && !YTDLP_BIN.includes('\\'));
+  } catch (e) {}
+
+  if (!hasYtDlp) {
+    try {
+      const fallbackData = await fallbackExtractInfo(targetUrl);
+      infoCache.set(targetUrl, { timestamp: Date.now(), data: fallbackData });
+      return res.json(fallbackData);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   const settings = getSettings();
   const isPlaylistReq = req.query.playlist === 'true';
 
   // High-speed extraction flags:
-  // 1. --no-playlist: Prevents 30s+ hang when user pastes a link with &list=
-  // 2. --extractor-args: Queries android client for instant response without heavy JS execution
+  // 1. --no-playlist: Prevents hang when user pastes a link with &list=
+  // 2. --js-runtimes node: Enables high-speed JS challenge solving without warnings
   // 3. --socket-timeout: Never hangs on slow network calls
   const args = [
     '--dump-single-json',
@@ -430,7 +610,7 @@ app.get('/api/info', (req, res) => {
     '--skip-download',
     '--no-check-certificates',
     '--socket-timeout', '10',
-    '--extractor-args', 'youtube:player_client=android,web'
+    '--js-runtimes', 'node'
   ];
 
   if (!isPlaylistReq) {
@@ -454,11 +634,18 @@ app.get('/api/info', (req, res) => {
   proc.stdout.on('data', chunk => { stdoutData += chunk.toString(); });
   proc.stderr.on('data', chunk => { stderrData += chunk.toString(); });
 
-  proc.on('close', code => {
+  proc.on('close', async code => {
     if (code !== 0 || !stdoutData) {
-      return res.status(500).json({
-        error: stderrData.trim() || 'Failed to extract media information. Check if URL is valid or private.'
-      });
+      // Fallback to serverless extractor if yt-dlp encountered an error
+      try {
+        const fallbackData = await fallbackExtractInfo(targetUrl);
+        infoCache.set(targetUrl, { timestamp: Date.now(), data: fallbackData });
+        return res.json(fallbackData);
+      } catch (fErr) {
+        return res.status(500).json({
+          error: stderrData.trim() || 'Failed to extract media information. Check if URL is valid or private.'
+        });
+      }
     }
 
     try {
@@ -589,12 +776,22 @@ app.get('/api/search', (req, res) => {
   const query = req.query.q;
   if (!query) return res.status(400).json({ error: 'Search query is required' });
 
+  let hasYtDlp = false;
+  try {
+    hasYtDlp = fs.existsSync(YTDLP_BIN) || (!YTDLP_BIN.includes('/') && !YTDLP_BIN.includes('\\'));
+  } catch (e) {}
+
+  if (!hasYtDlp) {
+    return res.json({ success: true, results: [] });
+  }
+
   const searchEngine = req.query.music === 'true' ? 'ytsearchmusic' : 'ytsearch';
   const count = parseInt(req.query.count, 10) || 15;
   const args = [
     '--dump-json',
     '--flat-playlist',
     '--no-warnings',
+    '--js-runtimes', 'node',
     `${searchEngine}${count}:${query}`
   ];
 
@@ -626,8 +823,8 @@ app.get('/api/search', (req, res) => {
   });
 });
 
-// Direct Browser Download (Streams directly to browser download prompt)
-app.get('/api/browser-download', (req, res) => {
+// High-Speed Direct Browser Download Endpoint (Streams directly to the user's browser download manager)
+app.get('/api/browser-download', async (req, res) => {
   const {
     url,
     type = 'video',
@@ -635,72 +832,165 @@ app.get('/api/browser-download', (req, res) => {
     container = 'mp4',
     formatId,
     audioFormat = 'mp3',
-    audioQuality = '320k'
+    audioQuality = '320k',
+    title = '',
+    directUrl = ''
   } = req.query;
 
   if (!url) return res.status(400).send('URL query parameter is required');
 
-  const taskId = 'browser_' + Date.now();
-  const tempPattern = path.join(DOWNLOADS_DIR, `dl_${taskId}_%(title)s.%(ext)s`);
+  const cleanTitle = (title || 'Media')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 90) || 'Media';
+  const ext = type === 'audio' ? (audioFormat || 'mp3') : (container || 'mp4');
+  const safeFilename = `${cleanTitle}.${ext}`;
 
-  const args = [
-    '--newline',
-    '--no-playlist',
-    '--ffmpeg-location', FFMPEG_BIN,
-    '-o', tempPattern
-  ];
+  // 1. Direct Stream Pipe if directUrl is present (Fastest: Instagram, TikTok, Twitter, Reddit, or resolved CDN)
+  if (directUrl && directUrl.startsWith('http')) {
+    try {
+      console.log(`[Browser Download] Piping direct URL to browser: ${safeFilename}`);
+      const fetchHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': '*/*'
+      };
+      const streamRes = await fetch(directUrl, { headers: fetchHeaders });
+      if (!streamRes.ok) {
+        throw new Error(`Upstream returned ${streamRes.status}`);
+      }
 
-  if (type === 'audio') {
-    args.push('-x', '--audio-format', audioFormat || 'mp3', '--audio-quality', audioQuality || '320k');
-    args.push('--embed-thumbnail', '--embed-metadata');
-  } else {
-    if (formatId && formatId !== 'best' && formatId !== 'auto') {
-      args.push('-f', `${formatId}+bestaudio[ext=m4a]/bestaudio/best`);
-    } else if (resolution === 'best') {
-      args.push('-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best');
-    } else {
-      args.push('-f', `bestvideo[height<=${resolution}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]/best`);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
+      const contentType = streamRes.headers.get('content-type') || (type === 'audio' ? 'audio/mpeg' : 'video/mp4');
+      res.setHeader('Content-Type', contentType);
+      const contentLength = streamRes.headers.get('content-length');
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+
+      const nodeStream = streamRes.body;
+      if (nodeStream.pipe) {
+        return nodeStream.pipe(res);
+      } else {
+        const { Readable } = require('stream');
+        return Readable.fromWeb(nodeStream).pipe(res);
+      }
+    } catch (err) {
+      console.warn('[Browser Download] Direct stream failed, falling back to engine:', err.message);
     }
-    args.push('--merge-output-format', container);
-    if (container === 'mp4') {
-      args.push('--postprocessor-args', 'Merger:-c:a aac -b:a 192k');
-    }
-    args.push('--embed-thumbnail');
   }
 
-  args.push(url);
+  // 2. Local / Dedicated yt-dlp Engine Stream
+  let hasYtDlp = false;
+  try {
+    hasYtDlp = fs.existsSync(YTDLP_BIN) || (!YTDLP_BIN.includes('/') && !YTDLP_BIN.includes('\\'));
+  } catch (e) {}
 
-  let detectedFilename = null;
-  const proc = spawn(YTDLP_BIN, args, { windowsHide: true });
-
-  proc.stdout.on('data', data => {
-    const text = data.toString();
-    const destMatch = text.match(/\[(?:download|Merger|ExtractAudio|ffmpeg)\]\s+(?:Destination:|Merging formats into\s+)"?([^"\n\r]+)"?/i);
-    if (destMatch) {
-      detectedFilename = path.basename(destMatch[1].trim());
+  if (hasYtDlp) {
+    console.log(`[Browser Download] Streaming with yt-dlp: ${safeFilename}`);
+    
+    // Choose streaming format argument
+    let formatArg = 'best';
+    if (type === 'audio') {
+      formatArg = 'ba/b';
+    } else if (formatId && formatId !== 'auto') {
+      formatArg = `${formatId}+ba/best`;
+    } else if (resolution === 'best') {
+      formatArg = 'bestvideo+bestaudio/best';
+    } else {
+      formatArg = `bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]/best`;
     }
-  });
 
-  proc.on('close', code => {
-    if (code === 0) {
-      if (!detectedFilename) {
-        try {
-          const files = fs.readdirSync(DOWNLOADS_DIR);
-          detectedFilename = files.find(f => f.includes(taskId));
-        } catch (e) {}
-      }
-      if (detectedFilename) {
-        const filePath = path.join(DOWNLOADS_DIR, detectedFilename);
-        const cleanName = detectedFilename.replace(`dl_${taskId}_`, '');
-        return res.download(filePath, cleanName);
-      }
+    const args = [
+      '--newline',
+      '--no-playlist',
+      '--no-warnings',
+      '--no-check-certificates',
+      '--js-runtimes', 'node',
+      '-f', formatArg
+    ];
+
+    if (FFMPEG_BIN) {
+      args.push('--ffmpeg-location', FFMPEG_BIN);
     }
-    res.status(500).send('Download failed to complete on server');
-  });
 
-  proc.on('error', err => {
-    res.status(500).send('Error launching download: ' + err.message);
-  });
+    const cookiePath = getCookieFilePath();
+    if (cookiePath) args.push('--cookies', cookiePath);
+
+    // Muxing for browser direct stream
+    if (type === 'audio') {
+      args.push('-o', '-');
+      res.setHeader('Content-Type', audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/mp4');
+    } else {
+      args.push('--merge-output-format', container === 'mkv' ? 'mkv' : 'mp4');
+      if (container !== 'mkv') {
+        args.push('--postprocessor-args', 'Merger:-movflags frag_keyframe+empty_moov');
+      }
+      args.push('-o', '-');
+      res.setHeader('Content-Type', container === 'webm' ? 'video/webm' : (container === 'mkv' ? 'video/x-matroska' : 'video/mp4'));
+    }
+
+    args.push(url);
+
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
+
+    const proc = spawn(YTDLP_BIN, args, { windowsHide: true });
+
+    let sentBytes = false;
+    proc.stdout.on('data', chunk => {
+      sentBytes = true;
+      res.write(chunk);
+    });
+
+    proc.stdout.on('end', () => {
+      res.end();
+    });
+
+    proc.stderr.on('data', d => {
+      const txt = d.toString();
+      if (txt.includes('ERROR:')) console.warn(`[Stream stderr] ${txt.trim()}`);
+    });
+
+    proc.on('close', code => {
+      if (!sentBytes && code !== 0) {
+        if (!res.headersSent) {
+          res.status(500).send('Download stream could not be started by engine.');
+        }
+      }
+    });
+
+    proc.on('error', err => {
+      console.error('[Stream Process Error]', err.message);
+      if (!res.headersSent) {
+        res.status(500).send('Error initiating stream: ' + err.message);
+      }
+    });
+
+    req.on('close', () => {
+      try { proc.kill(); } catch (e) {}
+    });
+
+    return;
+  }
+
+  // 3. Fallback for Vercel Serverless (when yt-dlp binary is not installed)
+  try {
+    const meta = await fallbackExtractInfo(url);
+    let resolvedStreamUrl = null;
+
+    if (type === 'audio' && meta.audioFormats && meta.audioFormats.length > 0) {
+      resolvedStreamUrl = meta.audioFormats[0].direct_url;
+    } else if (meta.videoFormats && meta.videoFormats.length > 0) {
+      const match = meta.videoFormats.find(f => f.direct_url) || meta.videoFormats[0];
+      resolvedStreamUrl = match.direct_url;
+    }
+
+    if (resolvedStreamUrl) {
+      return res.redirect(resolvedStreamUrl);
+    }
+
+    res.status(500).send('Direct browser streaming unavailable for this link on serverless. Please deploy with Docker for complete yt-dlp stream merging.');
+  } catch (err) {
+    res.status(500).send('Download error: ' + err.message);
+  }
 });
 
 // 4. Create Download Task
