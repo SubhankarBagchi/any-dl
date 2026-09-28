@@ -147,11 +147,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initDownloader();
   initSSE();
   initLibrary();
+  initAnalytics();
   initTerminal();
   initSettings();
   initPlayer();
   fetchStatus();
   fetchHistory();
+  fetchAnalytics();
 });
 
 // Toast System
@@ -173,6 +175,7 @@ function initNavigation() {
     home: 'Media Downloader',
     queue: 'Live Queue & Downloads',
     library: 'Downloaded Library',
+    analytics: 'Analytics & Live Telemetry',
     terminal: 'yt-dlp Terminal Console',
     settings: 'Settings & Diagnostic'
   };
@@ -191,6 +194,7 @@ function initNavigation() {
       elements.pageTitle.textContent = titles[targetTab] || 'Media Downloader';
 
       if (targetTab === 'library') fetchHistory();
+      if (targetTab === 'analytics') fetchAnalytics();
       if (targetTab === 'settings') loadSettingsToUI();
     });
   });
@@ -238,8 +242,17 @@ function initSSE() {
         const tracked = tasks.find(t => t.id === state.trackedBrowserTaskId);
         if (tracked && elements.cardInlineProgress) {
           elements.cardInlineProgress.style.display = 'block';
+
+          if (tracked.status === 'failed') {
+            elements.inlineStatusTitle.textContent = 'Download Failed: ' + (tracked.error || 'Check URL or permissions');
+            elements.inlineSpeedText.textContent = 'Error';
+            elements.inlineProgressFill.style.background = '#ef4444';
+            return;
+          }
+
           const pct = Math.round(tracked.progress || 0);
           elements.inlineProgressFill.style.width = `${pct}%`;
+          elements.inlineProgressFill.style.background = 'linear-gradient(90deg, var(--accent-cyan), #a855f7)';
           elements.inlineStatusPct.textContent = `${pct}%`;
           elements.inlineSpeedText.textContent = tracked.speed || 'Downloading...';
           elements.inlineEtaText.textContent = tracked.status === 'processing' 
@@ -260,6 +273,7 @@ function initSSE() {
       const data = JSON.parse(e.data);
       showToast(`Finished downloading: ${data.title || data.filename} (${data.fileSize})`, 'success');
       fetchHistory();
+      if (typeof fetchAnalytics === 'function') fetchAnalytics();
 
       // If this was a tracked browser download, AUTOMATICALLY trigger browser download!
       if (state.trackedBrowserTaskId && data.id === state.trackedBrowserTaskId) {
@@ -889,11 +903,12 @@ function handleStartDownload(isBackgroundQueue = false) {
       }
     }
   } else {
-    if (!isBackgroundQueue || state.isVercel) {
+    if (state.isVercel) {
       // 100% DIRECT BROWSER DOWNLOAD: Instant & Serverless / Vercel compatible
       downloadDirectToBrowser({ type: mode });
     } else {
-      queueDownload({ type: mode, isBackgroundQueue: true });
+      // Full Local Engine: Process pristine file with live SSE progress & AAC conversion, then auto-download
+      queueDownload({ type: mode, isBackgroundQueue: isBackgroundQueue });
     }
   }
 }
@@ -1537,6 +1552,138 @@ function playInDock({ title, uploader, streamUrl, youtubeId }) {
   }
 
   dock.style.display = 'block';
+}
+
+// Analytics System
+function initAnalytics() {
+  const refreshBtn = document.getElementById('refresh-analytics-btn');
+  const resetBtn = document.getElementById('reset-analytics-btn');
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      fetchAnalytics();
+      showToast('Analytics metrics refreshed', 'info');
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to reset all telemetry & analytics metrics?')) {
+        try {
+          const res = await fetch('/api/analytics/reset', { method: 'POST' });
+          if (res.ok) {
+            showToast('Analytics counters reset', 'success');
+            fetchAnalytics();
+          }
+        } catch (e) {}
+      }
+    });
+  }
+}
+
+async function fetchAnalytics() {
+  try {
+    const res = await fetch('/api/analytics');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.success) return;
+
+    const totalDlEl = document.getElementById('stat-total-downloads');
+    const totalAnalyzedEl = document.getElementById('stat-total-analyzed');
+    const totalBandwidthEl = document.getElementById('stat-total-bandwidth');
+    const successRateEl = document.getElementById('stat-success-rate');
+
+    if (totalDlEl) totalDlEl.textContent = data.totalDownloads ?? 0;
+    if (totalAnalyzedEl) totalAnalyzedEl.textContent = data.totalAnalyzed ?? 0;
+    if (totalBandwidthEl) totalBandwidthEl.textContent = data.totalBandwidth ?? '0 MB';
+    if (successRateEl) successRateEl.textContent = data.successRate ?? '100%';
+
+    // Platform bars
+    const platforms = data.platforms || {};
+    const platformTotal = Object.values(platforms).reduce((a, b) => a + b, 0) || 1;
+    const platformKeys = [
+      { key: 'youtube', name: 'YouTube', icon: '▶️', color: '#ef4444' },
+      { key: 'tiktok', name: 'TikTok', icon: '🎵', color: '#00f2fe' },
+      { key: 'instagram', name: 'Instagram', icon: '📸', color: '#e1306c' },
+      { key: 'twitter', name: 'Twitter/X', icon: '𝕏', color: '#1da1f2' },
+      { key: 'soundcloud', name: 'SoundCloud', icon: '☁️', color: '#ff7700' },
+      { key: 'facebook', name: 'Facebook', icon: '📘', color: '#1877f2' },
+      { key: 'other', name: 'Other Sites', icon: '🌐', color: '#10b981' }
+    ];
+
+    const platformGrid = document.getElementById('analytics-platform-list');
+    if (platformGrid) {
+      platformGrid.innerHTML = '';
+      platformKeys.forEach(p => {
+        const count = platforms[p.key] || 0;
+        const pct = Math.round((count / platformTotal) * 100);
+        const row = document.createElement('div');
+        row.className = 'analytics-platform-row';
+        row.innerHTML = `
+          <div class="platform-meta">
+            <span class="platform-icon">${p.icon}</span>
+            <span class="platform-name">${p.name}</span>
+            <span class="platform-count">${count} (${pct}%)</span>
+          </div>
+          <div class="platform-bar-track">
+            <div class="platform-bar-fill" style="width: ${Math.max(pct, count > 0 ? 5 : 0)}%; background-color: ${p.color};"></div>
+          </div>
+        `;
+        platformGrid.appendChild(row);
+      });
+    }
+
+    // Media Types Ratio
+    const formats = data.formats || {};
+    const vidCount = formats.video || 0;
+    const audCount = formats.audio || 0;
+    const formatTotal = (vidCount + audCount) || 1;
+    const vidPct = Math.round((vidCount / formatTotal) * 100);
+    const audPct = 100 - vidPct;
+
+    const vidPctEl = document.getElementById('stat-video-pct');
+    const audPctEl = document.getElementById('stat-audio-pct');
+    const vidBarEl = document.getElementById('stat-video-bar');
+    const audBarEl = document.getElementById('stat-audio-bar');
+
+    if (vidPctEl) vidPctEl.textContent = `${vidCount} (${vidPct}%)`;
+    if (audPctEl) audPctEl.textContent = `${audCount} (${audPct}%)`;
+    if (vidBarEl) vidBarEl.style.width = `${vidPct}%`;
+    if (audBarEl) audBarEl.style.width = `${audPct}%`;
+
+    // Recent Activity in Analytics
+    const recentActivityList = document.getElementById('analytics-recent-activity');
+    if (recentActivityList) {
+      const history = data.recentHistory || [];
+      if (history.length === 0) {
+        recentActivityList.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem; padding: 12px 0;">No download activity recorded yet. Paste a video link to begin!</div>';
+      } else {
+        recentActivityList.innerHTML = '';
+        history.slice(0, 6).forEach(item => {
+          const itemEl = document.createElement('div');
+          itemEl.className = 'analytics-activity-item';
+          itemEl.innerHTML = `
+            <div class="activity-left">
+              <span class="activity-type-badge ${item.type === 'audio' ? 'badge-audio' : 'badge-video'}">${item.type === 'audio' ? 'AUDIO' : 'VIDEO'}</span>
+              <div class="activity-details">
+                <div class="activity-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+                <div class="activity-sub">${item.fileSize || 'Standard'} • ${item.completedAt ? formatDate(item.completedAt) : 'Recently'}</div>
+              </div>
+            </div>
+            ${item.filename ? `
+              <a href="/api/files/${encodeURIComponent(item.filename)}/download" class="btn-activity-dl" download="${escapeHtml(item.filename)}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>Save</span>
+              </a>
+            ` : ''}
+          `;
+          recentActivityList.appendChild(itemEl);
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching analytics:', err);
+  }
 }
 
 // Utility Functions

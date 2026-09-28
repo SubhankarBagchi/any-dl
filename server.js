@@ -36,6 +36,7 @@ const DOWNLOADS_DIR = path.join(STORAGE_BASE, 'downloads');
 const DATA_DIR = path.join(STORAGE_BASE, 'data');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const ANALYTICS_FILE = path.join(DATA_DIR, 'analytics.json');
 
 // Ensure directories exist safely (never throw EROFS on read-only environments)
 [DOWNLOADS_DIR, DATA_DIR].forEach(dir => {
@@ -55,6 +56,115 @@ function hasYtDlpBinary() {
     }
   } catch (e) {}
   return false;
+}
+
+// Analytics Helpers
+const DEFAULT_ANALYTICS = {
+  totalAnalyzed: 0,
+  totalDownloads: 0,
+  successfulDownloads: 0,
+  failedDownloads: 0,
+  totalBytes: 0,
+  platforms: {
+    youtube: 0,
+    tiktok: 0,
+    instagram: 0,
+    twitter: 0,
+    soundcloud: 0,
+    facebook: 0,
+    other: 0
+  },
+  formats: {
+    video: 0,
+    audio: 0
+  },
+  lastUpdated: new Date().toISOString()
+};
+
+function getAnalytics() {
+  try {
+    if (fs.existsSync(ANALYTICS_FILE)) {
+      return { ...DEFAULT_ANALYTICS, ...JSON.parse(fs.readFileSync(ANALYTICS_FILE, 'utf8')) };
+    }
+  } catch (e) {
+    console.error('Error reading analytics:', e);
+  }
+  return DEFAULT_ANALYTICS;
+}
+
+function saveAnalytics(analytics) {
+  try {
+    analytics.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(ANALYTICS_FILE, JSON.stringify(analytics, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error saving analytics:', e);
+  }
+}
+
+function detectPlatformKey(url) {
+  if (!url) return 'other';
+  if (/youtube\.com|youtu\.be/i.test(url)) return 'youtube';
+  if (/tiktok\.com/i.test(url)) return 'tiktok';
+  if (/instagram\.com/i.test(url)) return 'instagram';
+  if (/twitter\.com|x\.com/i.test(url)) return 'twitter';
+  if (/soundcloud\.com/i.test(url)) return 'soundcloud';
+  if (/facebook\.com|fb\.watch/i.test(url)) return 'facebook';
+  return 'other';
+}
+
+function trackAnalysisEvent(url) {
+  try {
+    const stats = getAnalytics();
+    stats.totalAnalyzed = (stats.totalAnalyzed || 0) + 1;
+    const plat = detectPlatformKey(url);
+    stats.platforms[plat] = (stats.platforms[plat] || 0) + 1;
+    saveAnalytics(stats);
+  } catch (e) {}
+}
+
+function trackDownloadEvent(url, type, sizeBytes, success = true) {
+  try {
+    const stats = getAnalytics();
+    stats.totalDownloads = (stats.totalDownloads || 0) + 1;
+    if (success) {
+      stats.successfulDownloads = (stats.successfulDownloads || 0) + 1;
+      if (sizeBytes && typeof sizeBytes === 'number') {
+        stats.totalBytes = (stats.totalBytes || 0) + sizeBytes;
+      }
+      const fmt = type === 'audio' ? 'audio' : 'video';
+      stats.formats[fmt] = (stats.formats[fmt] || 0) + 1;
+    } else {
+      stats.failedDownloads = (stats.failedDownloads || 0) + 1;
+    }
+    saveAnalytics(stats);
+  } catch (e) {}
+}
+
+// Global yt-dlp Args Builder with Node JS Runtime & FFmpeg support
+function getBaseYtDlpArgs(extraArgs = []) {
+  const settings = getSettings();
+  const args = [
+    '--no-warnings',
+    '--no-check-certificates',
+    '--socket-timeout', '15'
+  ];
+
+  if (process.execPath) {
+    args.push('--js-runtimes', `node:${process.execPath}`);
+  }
+
+  if (FFMPEG_BIN) {
+    args.push('--ffmpeg-location', FFMPEG_BIN);
+  }
+
+  const cookiePath = getCookieFilePath();
+  if (cookiePath) args.push('--cookies', cookiePath);
+
+  if (settings.proxy && settings.proxy.trim()) {
+    args.push('--proxy', settings.proxy.trim());
+  }
+
+  return [...args, ...extraArgs];
 }
 
 // Middleware
@@ -189,27 +299,19 @@ function startTask(task) {
   broadcastQueue();
 
   const settings = getSettings();
-  const args = [
+  const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s');
+
+  const args = getBaseYtDlpArgs([
     '--newline',
     '--progress',
-    '--ffmpeg-location', FFMPEG_BIN,
-    '-o', path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s')
-  ];
-
-  // Proxy
-  if (settings.proxy && settings.proxy.trim()) {
-    args.push('--proxy', settings.proxy.trim());
-  }
+    '--progress-template', 'download:[download] %(progress._percent_str)s of %(progress._total_bytes_str|progress._total_bytes_estimate_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s',
+    '--print', 'after_move:filepath',
+    '-o', outputTemplate
+  ]);
 
   // Rate Limit
   if (settings.rateLimit && settings.rateLimit.trim()) {
     args.push('--limit-rate', settings.rateLimit.trim());
-  }
-
-  // Cookies
-  const cookiePath = getCookieFilePath();
-  if (cookiePath) {
-    args.push('--cookies', cookiePath);
   }
 
   // Format arguments
@@ -231,12 +333,11 @@ function startTask(task) {
     const container = task.container || 'mp4';
     
     if (task.formatId && task.formatId !== 'best' && task.formatId !== 'auto') {
-      // Always attach best audio even if user picked a video-only stream!
-      args.push('-f', `${task.formatId}+bestaudio[ext=m4a]/bestaudio/best`);
+      args.push('-f', `${task.formatId}+bestaudio/best`);
     } else if (res === 'best') {
-      args.push('-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best');
+      args.push('-f', 'bestvideo+bestaudio/best');
     } else {
-      args.push('-f', `bestvideo[height<=${res}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${res}]+bestaudio/best[height<=${res}]/best`);
+      args.push('-f', `bestvideo[height<=${res}]+bestaudio/best[height<=${res}]/best`);
     }
 
     args.push('--merge-output-format', container);
@@ -279,39 +380,53 @@ function startTask(task) {
 
   proc.stdout.on('data', data => {
     const text = data.toString();
-    // Parse progress e.g.: [download]  45.3% of ~ 84.12MiB at  4.12MiB/s ETA 00:11
-    const progressMatch = text.match(/\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+([\d:]+)/i);
-    if (progressMatch) {
-      task.progress = parseFloat(progressMatch[1]);
-      task.totalSize = progressMatch[2];
-      task.speed = progressMatch[3];
-      task.eta = progressMatch[4];
-      task.status = 'downloading';
-      broadcastQueue();
-      return;
-    }
+    const lines = text.split('\n');
 
-    const simpleProgressMatch = text.match(/\[download\]\s+([\d.]+)%/i);
-    if (simpleProgressMatch) {
-      task.progress = parseFloat(simpleProgressMatch[1]);
-      broadcastQueue();
-    }
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
 
-    // Detecting destination/output filename
-    const destMatch = text.match(/\[(?:download|Merger|ExtractAudio|ffmpeg)\]\s+(?:Destination:|Merging formats into\s+)"?([^"\n\r]+)"?/i);
-    if (destMatch) {
-      const detected = destMatch[1].trim();
-      if (detected.includes(DOWNLOADS_DIR) || detected.endsWith('.mp4') || detected.endsWith('.mkv') || detected.endsWith('.webm') || detected.endsWith('.mp3') || detected.endsWith('.m4a') || detected.endsWith('.opus') || detected.endsWith('.flac') || detected.endsWith('.wav')) {
-        createdFilename = path.basename(detected);
+      // Check if after_move printed the final file path
+      if (line.includes(DOWNLOADS_DIR) || (fs.existsSync(line) && path.dirname(line) === DOWNLOADS_DIR)) {
+        createdFilename = path.basename(line);
         task.filename = createdFilename;
       }
-    }
 
-    // Processing / Merging stages
-    if (text.includes('[Merger]') || text.includes('[ExtractAudio]') || text.includes('[Metadata]') || text.includes('[ThumbnailsConvertor]')) {
-      task.status = 'processing';
-      task.speed = 'Finalizing...';
-      broadcastQueue();
+      // Parse progress template: download:[download] 45.3% of 84.12MiB at 4.12MiB/s ETA 00:11
+      const progressMatch = line.match(/\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+([\d:]+)/i);
+      if (progressMatch) {
+        task.progress = parseFloat(progressMatch[1]);
+        task.totalSize = progressMatch[2];
+        task.speed = progressMatch[3];
+        task.eta = progressMatch[4];
+        task.status = 'downloading';
+        broadcastQueue();
+        continue;
+      }
+
+      const simpleProgressMatch = line.match(/\[download\]\s+([\d.]+)%/i);
+      if (simpleProgressMatch) {
+        task.progress = parseFloat(simpleProgressMatch[1]);
+        task.status = 'downloading';
+        broadcastQueue();
+      }
+
+      // Detecting destination/output filename
+      const destMatch = line.match(/\[(?:download|Merger|ExtractAudio|ffmpeg)\]\s+(?:Destination:|Merging formats into\s+)"?([^"\n\r]+)"?/i);
+      if (destMatch) {
+        const detected = destMatch[1].trim();
+        if (detected.includes(DOWNLOADS_DIR) || detected.endsWith('.mp4') || detected.endsWith('.mkv') || detected.endsWith('.webm') || detected.endsWith('.mp3') || detected.endsWith('.m4a') || detected.endsWith('.opus') || detected.endsWith('.flac') || detected.endsWith('.wav')) {
+          createdFilename = path.basename(detected);
+          task.filename = createdFilename;
+        }
+      }
+
+      // Processing / Merging stages
+      if (line.includes('[Merger]') || line.includes('[ExtractAudio]') || line.includes('[Metadata]') || line.includes('[ThumbnailsConvertor]')) {
+        task.status = 'processing';
+        task.speed = 'Finalizing...';
+        broadcastQueue();
+      }
     }
   });
 
@@ -336,22 +451,29 @@ function startTask(task) {
       if (!task.filename) {
         try {
           const files = fs.readdirSync(DOWNLOADS_DIR);
-          // Match files created recently
           const matched = files.find(f => task.title && f.toLowerCase().includes(task.title.toLowerCase().substring(0, 15)));
           if (matched) {
             task.filename = matched;
+          } else if (files.length > 0) {
+            const sorted = files.map(f => ({ name: f, time: fs.statSync(path.join(DOWNLOADS_DIR, f)).mtimeMs })).sort((a,b) => b.time - a.time);
+            task.filename = sorted[0].name;
           }
         } catch (e) {}
       }
 
       // Read file stats
       let fileSize = 'Unknown';
+      let sizeInBytes = 0;
       if (task.filename) {
         try {
           const stats = fs.statSync(path.join(DOWNLOADS_DIR, task.filename));
+          sizeInBytes = stats.size;
           fileSize = (stats.size / (1024 * 1024)).toFixed(1) + ' MB';
         } catch (e) {}
       }
+
+      // Record analytics
+      trackDownloadEvent(task.url, task.type, sizeInBytes, true);
 
       // Add to history
       const history = getHistory();
@@ -379,6 +501,7 @@ function startTask(task) {
       if (task.status !== 'cancelled') {
         task.status = 'failed';
         task.error = task.error || `Process exited with code ${code}`;
+        trackDownloadEvent(task.url, task.type, 0, false);
       }
     }
     broadcastQueue();
@@ -389,6 +512,7 @@ function startTask(task) {
     task.status = 'failed';
     task.error = err.message;
     task.process = null;
+    trackDownloadEvent(task.url, task.type, 0, false);
     broadcastQueue();
     processQueue();
   });
@@ -819,6 +943,9 @@ app.get('/api/info', async (req, res) => {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
 
+  // Track analysis event for analytics
+  trackAnalysisEvent(targetUrl);
+
   // Check cache first for instant response (< 10ms)
   const cached = infoCache.get(targetUrl);
   if (cached && (Date.now() - cached.timestamp < INFO_CACHE_TTL)) {
@@ -836,30 +963,17 @@ app.get('/api/info', async (req, res) => {
     }
   }
 
-  // Otherwise, use local yt-dlp binary (Docker / VPS / Local Dev)
-  const settings = getSettings();
+  // Otherwise, use local yt-dlp binary (Docker / VPS / Local Dev) with Node.js JS runtime
   const isPlaylistReq = req.query.playlist === 'true';
 
-  const args = [
+  const args = getBaseYtDlpArgs([
     '--dump-single-json',
-    '--no-warnings',
-    '--skip-download',
-    '--no-check-certificates',
-    '--socket-timeout', '10',
-    '--extractor-args', 'youtube:player_client=android,web'
-  ];
+    '--skip-download'
+  ]);
 
   if (!isPlaylistReq) {
     args.push('--no-playlist');
   }
-
-  if (FFMPEG_BIN) {
-    args.push('--ffmpeg-location', FFMPEG_BIN);
-  }
-
-  const cookiePath = getCookieFilePath();
-  if (cookiePath) args.push('--cookies', cookiePath);
-  if (settings.proxy && settings.proxy.trim()) args.push('--proxy', settings.proxy.trim());
 
   args.push(targetUrl);
 
@@ -1031,12 +1145,11 @@ app.get('/api/search', async (req, res) => {
 
   const searchEngine = req.query.music === 'true' ? 'ytsearchmusic' : 'ytsearch';
   const count = parseInt(req.query.count, 10) || 15;
-  const args = [
+  const args = getBaseYtDlpArgs([
     '--dump-json',
     '--flat-playlist',
-    '--no-warnings',
     `${searchEngine}${count}:${query}`
-  ];
+  ]);
 
   const proc = spawn(YTDLP_BIN, args, { windowsHide: true });
   let stdoutData = '';
@@ -1113,7 +1226,10 @@ app.get('/api/browser-download', async (req, res) => {
         const contentType = streamRes.headers.get('content-type') || (type === 'audio' ? 'audio/mpeg' : 'video/mp4');
         res.setHeader('Content-Type', contentType);
         const contentLength = streamRes.headers.get('content-length');
-        if (contentLength) res.setHeader('Content-Length', contentLength);
+        if (contentLength) {
+          res.setHeader('Content-Length', contentLength);
+          trackDownloadEvent(url, type, parseInt(contentLength, 10), true);
+        }
 
         const nodeStream = streamRes.body;
         if (nodeStream.pipe) {
@@ -1130,70 +1246,119 @@ app.get('/api/browser-download', async (req, res) => {
 
   // 2. Local yt-dlp Engine Stream (If binary exists locally)
   if (hasYtDlpBinary()) {
-    console.log(`[Browser Download] Streaming with yt-dlp: ${safeFilename}`);
-    let formatArg = 'best';
+    console.log(`[Browser Download] Starting high-fidelity stream for: ${safeFilename}`);
+
     if (type === 'audio') {
-      formatArg = 'ba/b';
-    } else if (formatId && formatId !== 'auto') {
-      formatArg = `${formatId}+ba/best`;
+      const args = getBaseYtDlpArgs([
+        '--newline',
+        '--no-playlist',
+        '-f', 'ba/b',
+        '-x',
+        '--audio-format', audioFormat || 'mp3',
+        '--audio-quality', audioQuality || '320k',
+        '-o', '-',
+        url
+      ]);
+
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
+      res.setHeader('Content-Type', audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/mp4');
+
+      const proc = spawn(YTDLP_BIN, args, { windowsHide: true });
+      let sentBytes = false;
+      let totalPiped = 0;
+
+      proc.stdout.on('data', chunk => {
+        sentBytes = true;
+        totalPiped += chunk.length;
+        res.write(chunk);
+      });
+
+      proc.stdout.on('end', () => {
+        trackDownloadEvent(url, 'audio', totalPiped, true);
+        res.end();
+      });
+
+      proc.stderr.on('data', d => {
+        const txt = d.toString();
+        if (txt.includes('ERROR:')) console.warn(`[Stream stderr] ${txt.trim()}`);
+      });
+
+      proc.on('close', code => {
+        if (!sentBytes && code !== 0 && !res.headersSent) {
+          trackDownloadEvent(url, 'audio', 0, false);
+          res.status(500).send('Audio download stream could not be started by engine.');
+        }
+      });
+
+      proc.on('error', err => {
+        trackDownloadEvent(url, 'audio', 0, false);
+        if (!res.headersSent) res.status(500).send('Error initiating stream: ' + err.message);
+      });
+
+      req.on('close', () => {
+        try { proc.kill(); } catch (e) {}
+      });
+      return;
+    }
+
+    // Video stream: download cleanly with AAC audio and send full seekable file
+    const tempFileId = 'browser_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const tempFilePath = path.join(DOWNLOADS_DIR, `${cleanTitle}_${tempFileId}.${ext}`);
+    
+    let formatArg = 'best';
+    if (formatId && formatId !== 'best' && formatId !== 'auto') {
+      formatArg = `${formatId}+bestaudio/best`;
     } else if (resolution === 'best') {
       formatArg = 'bestvideo+bestaudio/best';
     } else {
       formatArg = `bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]/best`;
     }
 
-    const args = [
+    const args = getBaseYtDlpArgs([
       '--newline',
       '--no-playlist',
-      '--no-warnings',
-      '--no-check-certificates',
-      '-f', formatArg
-    ];
+      '-f', formatArg,
+      '--merge-output-format', container,
+      '-o', tempFilePath
+    ]);
 
-    if (FFMPEG_BIN) {
-      args.push('--ffmpeg-location', FFMPEG_BIN);
-    }
-
-    const cookiePath = getCookieFilePath();
-    if (cookiePath) args.push('--cookies', cookiePath);
-
-    if (type === 'audio') {
-      args.push('-o', '-');
-      res.setHeader('Content-Type', audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/mp4');
-    } else {
-      args.push('--merge-output-format', container === 'mkv' ? 'mkv' : 'mp4');
-      if (container !== 'mkv') {
-        args.push('--postprocessor-args', 'Merger:-movflags frag_keyframe+empty_moov');
-      }
-      args.push('-o', '-');
-      res.setHeader('Content-Type', container === 'webm' ? 'video/webm' : (container === 'mkv' ? 'video/x-matroska' : 'video/mp4'));
+    if (container === 'mp4') {
+      args.push('--postprocessor-args', 'Merger:-c:a aac -b:a 192k');
     }
 
     args.push(url);
 
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
-
     const proc = spawn(YTDLP_BIN, args, { windowsHide: true });
-    let sentBytes = false;
-    proc.stdout.on('data', chunk => {
-      sentBytes = true;
-      res.write(chunk);
-    });
-    proc.stdout.on('end', () => { res.end(); });
     proc.stderr.on('data', d => {
       const txt = d.toString();
-      if (txt.includes('ERROR:')) console.warn(`[Stream stderr] ${txt.trim()}`);
+      if (txt.includes('ERROR:')) console.warn(`[Browser Download Error] ${txt.trim()}`);
     });
+
     proc.on('close', code => {
-      if (!sentBytes && code !== 0 && !res.headersSent) {
-        res.status(500).send('Download stream could not be started by engine.');
+      if (code === 0 && fs.existsSync(tempFilePath)) {
+        try {
+          const stats = fs.statSync(tempFilePath);
+          trackDownloadEvent(url, type, stats.size, true);
+        } catch (e) {}
+        res.download(tempFilePath, safeFilename, err => {
+          try {
+            if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+          } catch (e) {}
+        });
+      } else {
+        trackDownloadEvent(url, type, 0, false);
+        if (!res.headersSent) res.status(500).send('Failed to prepare media file for download.');
       }
     });
+
     proc.on('error', err => {
-      if (!res.headersSent) res.status(500).send('Error initiating stream: ' + err.message);
+      trackDownloadEvent(url, type, 0, false);
+      if (!res.headersSent) res.status(500).send('Error preparing stream: ' + err.message);
     });
+
     req.on('close', () => {
       try { proc.kill(); } catch (e) {}
+      try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) {}
     });
     return;
   }
@@ -1468,6 +1633,77 @@ app.delete('/api/history/:id', (req, res) => {
 app.post('/api/history/clear', (req, res) => {
   saveHistory([]);
   res.json({ success: true });
+});
+
+// Analytics & Insights Telemetry API
+app.get('/api/analytics', (req, res) => {
+  const stats = getAnalytics();
+  const history = getHistory();
+
+  // Compute live statistics from disk
+  let totalDiskBytes = 0;
+  let downloadedFilesCount = 0;
+  try {
+    const files = fs.readdirSync(DOWNLOADS_DIR);
+    downloadedFilesCount = files.length;
+    files.forEach(f => {
+      try {
+        const s = fs.statSync(path.join(DOWNLOADS_DIR, f));
+        totalDiskBytes += s.size;
+      } catch (e) {}
+    });
+  } catch (e) {}
+
+  const totalBytes = Math.max(stats.totalBytes || 0, totalDiskBytes);
+  const totalDownloads = Math.max(stats.totalDownloads || 0, history.length);
+  const successfulDownloads = Math.max(stats.successfulDownloads || 0, history.length);
+  const totalAttempts = successfulDownloads + (stats.failedDownloads || 0);
+  const successRate = totalAttempts > 0 
+    ? Math.round((successfulDownloads / totalAttempts) * 100) 
+    : 100;
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 MB';
+    const mb = bytes / (1024 * 1024);
+    if (mb >= 1024) {
+      return (mb / 1024).toFixed(2) + ' GB';
+    }
+    return mb.toFixed(1) + ' MB';
+  }
+
+  // Ensure format breakdown reflects history if stats is new
+  const formatCounts = {
+    video: stats.formats?.video || history.filter(h => h.type !== 'audio').length,
+    audio: stats.formats?.audio || history.filter(h => h.type === 'audio').length
+  };
+
+  // Derive platforms from history if fresh
+  const platformCounts = { ...(stats.platforms || {}) };
+  history.forEach(item => {
+    const pk = detectPlatformKey(item.url);
+    if (!platformCounts[pk]) platformCounts[pk] = 0;
+  });
+
+  res.json({
+    success: true,
+    totalAnalyzed: Math.max(stats.totalAnalyzed || 0, totalDownloads),
+    totalDownloads,
+    successfulDownloads,
+    failedDownloads: stats.failedDownloads || 0,
+    successRate: `${successRate}%`,
+    totalBytes,
+    totalBandwidth: formatBytes(totalBytes),
+    downloadedFilesCount,
+    platforms: platformCounts,
+    formats: formatCounts,
+    recentHistory: history.slice(0, 10),
+    lastUpdated: stats.lastUpdated
+  });
+});
+
+app.post('/api/analytics/reset', (req, res) => {
+  saveAnalytics(DEFAULT_ANALYTICS);
+  res.json({ success: true, message: 'Analytics metrics reset successfully' });
 });
 
 // 13. Stream File (HTTP 206 Partial Content Range support for browser player)

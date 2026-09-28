@@ -48,6 +48,11 @@
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 8 6 4-6 4Z"/></svg>
           <span class="nav-label">Library</span>
         </button>
+
+        <button class="nav-item" data-tab="analytics" id="nav-analytics">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+          <span class="nav-label">Analytics</span>
+        </button>
       </nav>
 
       <!-- Engine Status Pill -->
@@ -519,6 +524,118 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 8 6 4-6 4Z"/></svg>
             <h3>Library is Empty</h3>
             <p>Your finished downloads will appear here ready to stream or save.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: ANALYTICS & INSIGHTS -->
+      <section class="tab-panel" id="tab-analytics">
+        <div class="panel-header-row">
+          <div>
+            <h2>Analytics & Live Telemetry</h2>
+            <p class="section-sub">Real-time statistics on media analysis, completed downloads, bandwidth usage, and platform breakdown.</p>
+          </div>
+          <div class="panel-actions">
+            <button class="btn-subtle" id="refresh-analytics-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              <span>Refresh Stats</span>
+            </button>
+            <button class="btn-danger-subtle" id="reset-analytics-btn">Reset Metrics</button>
+          </div>
+        </div>
+
+        <!-- KPI Metrics Grid -->
+        <div class="analytics-kpi-grid">
+          <div class="analytics-kpi-card">
+            <div class="kpi-icon-wrap" style="background: rgba(0, 229, 255, 0.12); color: var(--accent-cyan);">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </div>
+            <div class="kpi-body">
+              <span class="kpi-label">Total Downloads</span>
+              <span class="kpi-val" id="stat-total-downloads">0</span>
+              <span class="kpi-hint">Completed media files</span>
+            </div>
+          </div>
+
+          <div class="analytics-kpi-card">
+            <div class="kpi-icon-wrap" style="background: rgba(168, 85, 247, 0.12); color: #c084fc;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div class="kpi-body">
+              <span class="kpi-label">URLs Analyzed</span>
+              <span class="kpi-val" id="stat-total-analyzed">0</span>
+              <span class="kpi-hint">Media links inspected</span>
+            </div>
+          </div>
+
+          <div class="analytics-kpi-card">
+            <div class="kpi-icon-wrap" style="background: rgba(16, 185, 129, 0.12); color: var(--accent-green);">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            </div>
+            <div class="kpi-body">
+              <span class="kpi-label">Data Processed</span>
+              <span class="kpi-val" id="stat-total-bandwidth">0 MB</span>
+              <span class="kpi-hint">Downloaded media volume</span>
+            </div>
+          </div>
+
+          <div class="analytics-kpi-card">
+            <div class="kpi-icon-wrap" style="background: rgba(234, 179, 8, 0.12); color: #facc15;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <div class="kpi-body">
+              <span class="kpi-label">Success Rate</span>
+              <span class="kpi-val" id="stat-success-rate">100%</span>
+              <span class="kpi-hint">Download reliability</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Detailed Analytics Rows -->
+        <div class="analytics-detail-grid">
+          <!-- Platform Distribution -->
+          <div class="analytics-card">
+            <div class="analytics-card-header">
+              <h3>Platform Distribution</h3>
+              <span class="analytics-card-sub">Media requests grouped by platform source</span>
+            </div>
+            <div class="analytics-platform-list" id="analytics-platform-list">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+          <!-- Media Types & Formats -->
+          <div class="analytics-card">
+            <div class="analytics-card-header">
+              <h3>Media Format Share</h3>
+              <span class="analytics-card-sub">Video MP4 vs High-Quality Audio MP3</span>
+            </div>
+            <div class="format-ratio-wrap">
+              <div class="format-ratio-bar">
+                <div class="format-ratio-fill video-fill" id="stat-video-bar" style="width: 50%;"></div>
+                <div class="format-ratio-fill audio-fill" id="stat-audio-bar" style="width: 50%;"></div>
+              </div>
+              <div class="format-legend">
+                <div class="legend-item">
+                  <span class="legend-dot" style="background: var(--accent-cyan);"></span>
+                  <span class="legend-title">Video</span>
+                  <span class="legend-val" id="stat-video-pct">0 (0%)</span>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-dot" style="background: #a855f7;"></span>
+                  <span class="legend-title">Audio</span>
+                  <span class="legend-val" id="stat-audio-pct">0 (0%)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Recent Activity List -->
+            <div style="margin-top: 24px;">
+              <h4 style="font-size: 0.95rem; margin-bottom: 12px; color: var(--text-main);">Recent Download Activity</h4>
+              <div class="analytics-recent-activity" id="analytics-recent-activity">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
           </div>
         </div>
       </section>

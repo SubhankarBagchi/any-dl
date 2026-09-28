@@ -11,6 +11,7 @@ downloads/*
 # User data & logs
 data/history.json
 data/settings.json
+data/analytics.json
 *.log
 
 # Windows binaries (Linux/Docker downloads them automatically)
